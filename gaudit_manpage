@@ -1,0 +1,57 @@
+NAME
+    gaudit - a small proof of conept utility for VM security scanning
+
+SYNOPSIS
+    gaudit { -c | -r | -d } [OPTION] | { -v | -h }
+
+DESCRIPTION
+    Perform security audit functions on virtual domains from the hypervisor 
+    level, or dom0 in the case of Xen, when running in an environment that 
+    uses libvirt by utilitizing the libguestfs utilities.
+
+    -c
+        configuration file (if not using the default)
+    
+    -r [id]     
+        run report of audit specified by [id]
+            Note: This will not run an audit, but only generate a report
+    
+    -l
+        list report ids available along with domain options and timestamps
+
+    -d [dom1,dom2]  
+        virtual domain(s), comma separated: guest1,guest2
+            Note: Default is to run against all active virtual domains for
+            audits, but this field is *required* for report generation
+        
+    -v  
+        verbose messages during audit report gathering
+
+    -h  
+        print this help prompt and exit
+
+EXAMPLES
+    The following will run an audit on all currently active virtual domains in 
+    libvirt that contain the libguestfs live configurations, with verbose output
+        
+        gaudit -v
+
+    The following will run the same audit as above but only on virtual domains
+    'guest1' and 'guest2' also with verbose output
+
+        gaudit -d guest1,guest2 -v
+
+    This will generate a report with audit id 1234 and include verbose output 
+    as well as print a summary at the conclusion of the generation
+
+        gaudit -r 1234 -v 
+
+AUTHOR
+    Written by Adam Miller <ajm023@shsu.edu>
+
+BUGS
+    None currently known.
+
+SEE ALSO
+    libvirtd(8), virsh(1), virt-install(1), guestfs(3), guestfish(1),
+    guestmount(1), rkhunter(8)

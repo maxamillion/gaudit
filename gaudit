@@ -1,0 +1,431 @@
+#!/bin/bash
+###############################################################################
+#
+# Adam Miller - ajm023@shsu.edu
+#
+# gaudit
+#
+#   Auditing utility for hypervisor level (or dom0 in the case of Xen) 
+#   inspection of the virtual machines for security audit purposes.
+#   This utility also incorporates report generating functionality.
+#
+#   This utility is essentially a demonstration of concepts that could be taken
+#   further that currently uses a short list of security scanning software in 
+#   collaboration with libguestfs, libvirt, and kvm. The following are the
+#   pre-existing utilities being used and their results aggregated for simple
+#   reporting needs:
+#       - rkhunter
+#
+#   NOTE: Originally this proof of concept script incorporated other auditing
+#           utilities but with testing it was found that rkhunter was the only
+#           one mature enough in code base to be of heavy use in the proposed
+#           environment.
+#
+#   This functionality could easily be extended using the configuration 
+#   parameters.
+#
+#
+#   This code follows PEP8 as closely as possible, where applicable.
+#   For more information: http://www.python.org/dev/peps/pep-0008/
+#       - While this isn't python code, good guidelines shouldn't be limited to
+#         a single language. :)
+#   
+###############################################################################
+
+# Version tracking number
+gaudit_ver=0.1
+
+# Default configuration file used if none provided by user.
+conf_file="/etc/gaudit.conf"
+
+# Need a lock file so we don't try and run multiple audits ... could be bad
+lock_file=""
+
+# Need to log some stuff, security folks <3 logs
+#   This should also likely be able to be overridden in the conf file
+log_file=""
+
+# List audit report flags
+list_audits=""
+
+# Verbose flag, default is off
+verbose=0
+
+# Virtualization domains (domain in context of libvirt definition)
+virt_doms=""
+
+# Report tagging
+#   This is used for tagging to start and end of the aggregated audits, used
+#   for building reports.
+tag_num=$RANDOM
+b_tag="._BEGIN_$tag_num"
+e_tag="._END_$tag_num"
+
+# Audit id - this is used with the -r number, set to "this" audit to generate a
+#   report from.
+audit_id=$tag_num
+
+# report id - run report on this audit id, used for checking parameter passing
+report_id=0
+
+# Currently found active/running virt domains on this node (used for error
+# checking against user provided domains and default run against all vm doms)
+declare -a running_doms
+
+
+function fn_usage {
+## Function to print usage message
+    
+cat << EOF
+gaudit - ver $gaudit_ver security audit reporting for guest operating systems
+Usage: gaudit [options] [commands]
+    Options:
+        -h              - print this help prompt and exit
+        -c              - configuration file (if not using the default)
+        -v              - verbose messages during audit report gathering
+        -r [id]         - run report of audit specified by [id]
+            Note: This will not run an audit, but only generate a report
+        -l              - list available report ids
+        -d [dom1,dom2]  - virtual domain(s), comma separated: guest1,guest2
+            Note: Default is to run against all active virtual domains for
+                  audits, but this field is *required* for report generation
+
+EOF
+} #fn_usage
+
+function fn_vout {
+## Function to handle verbose output
+
+    if [[ $verbose -eq 1 ]]; then
+        printf "vINFO: $1\n"
+    fi
+} # fn_vout
+
+function fn_runaudit {
+    
+    # Setup the mounted environment.
+    vm_rootdir=$(mktemp -d)
+
+    fn_vout "Guestmounting root directory for $1"
+    #guestmount --live -d $1 $vm_rootdir
+    guestmount -r -i -d $1 $vm_rootdir 
+
+    # I hate to break indentation
+    cat >> $log_file <<OEF
+#############################################################################
+# Begin Rootkit Audit Log for $1 - $(date +%Y-%m-%d_%H:%M)
+#############################################################################
+OEF
+
+    ##rkhunter --check -l $tmp_log --sk --append-log -r $vm_rootdir --appendlog
+    ##rkhunter -x --check --nolog --sk -sk -r $vm_rootdir/ --disable immutable 
+
+    
+    ### Use rkhunter for part of the report, run against the new rootfs that's
+    #   been mounted. Disable the immutable checks as the FUSE module does not
+    #   support the immutable bit.
+    fn_vout "Running rkhunter against $1"
+    rkhunter -x --check --nolog --sk -sk -r $vm_rootdir --nomow \
+                --disable immutable --appendlog -l $log_file -q
+
+    # I hate to break indentation
+    cat >> $log_file <<OEF
+#############################################################################
+# End Rootkit Audit Log for $1 - $(date +%Y-%m-%d_%H:%M)
+#############################################################################
+OEF
+
+    # clean up after ourselves, don't want a bunch of dangling dirs in /tmp/
+    fusermount -u $vm_rootdir
+    rmdir $vm_rootdir
+
+} # fn_runaudit
+
+function fn_genreport {
+    # Function to generate a report from the log file based on a given audit 
+    # number, if no audit number is given then it will generate a report off
+    # the current running audit.
+
+    # Running report for each VM
+    printf "Report Summary for $2:\n"
+    
+    # Report info pulled from log file, this will be the working data set
+    sed -n "/\._BEGIN_$1/,/\._END_$1/p" $log_file |
+    sed -n \
+    "/# Begin Rootkit Audit Log for $2/,/# End Rootkit Audit Log for $2/p" |
+
+    awk '
+        BEGIN {
+            check_count = 0
+            s_count = 0
+            found_count = 0
+        }
+
+        /[c|C]hecking/ { 
+            check_count++ 
+        }
+
+        /[S|s]earching/ {
+            s_count++
+        }
+
+        /\[ Found \]/ {
+            found_count++
+            found_events[found_count] = $0
+        }
+
+        /\[ Warning \]/ {
+            w_count++
+            warning_events[w_count] = $0
+        }
+        
+        END {
+
+            if ( check_count == 0 ) {
+                printf "\t%s%s\n", 
+                    "ERROR: Requested Virtual Domain ",
+                    "does not exist in this audit id"
+                exit 1
+            }
+            printf "%s %d\n", "Number of checks performed:", check_count
+            printf "%s %d\n", "Number of worms/trojans searched for:", s_count
+            printf "%s %d\n", "Number of found events:", found_count
+            if ( found_count > 0 ) {
+                print "Events found: "
+                for ( f in found_events )
+                    print found_events[f]
+            }
+
+            printf "%s %d\n", "Number of warnings found:", w_count
+            if ( w_count > 0 ) {
+                print "Warnings found: "
+                for ( w in warning_events )
+                    print warning_events[w]
+            }
+            printf "%s%s\n%s\n%s\n",
+                "NOTE: Warnings about prerequisites and ",
+                "kernel modules are a normal side",
+                "effect of the fact that we are auditing guest filesystems, for",
+                "details run with -v option and parse the output accordingly."
+        
+            delete found_events
+            delete warning_events
+        }
+        '
+    
+
+} #fn_genreport
+
+
+function fn_parseconf {
+    # function to parse the configuration file 
+
+    
+    #NOTE: the config file is bash also, just not an executable script
+    if [[ -f $conf_file ]]; then
+        source $conf_file
+    fi
+    
+    if [[ $lock_file == "" ]]; then
+        # Need a default lock file just in case
+        lock_file="/var/run/gaudit.pid"
+
+        printf "ERROR: no lock file provided, using default: $lock_file\n" 1>&2
+    fi
+
+    if [[ $log_file == "" ]]; then
+        # Need to log some stuff, security folks <3 logs - defaults needed 
+        log_file="/var/log/gaudit.log"
+        
+        printf "ERROR: no log file provided, using default: $log_file\n" 1>&2
+    fi
+
+} #fn_parseconf
+
+## Need to check for root perms, security audits should likely only be done by
+## root .... and if someone bad has root on your hypervisor or dom0, that's bad
+fn_vout "Checking user permissions for access to virtual domains"
+if [[ $(id -u) -ne 0 ]]; then
+    printf "ERROR: gaudit must be run as root\n" 1>&2
+    fn_usage
+    exit 1
+fi
+
+## Read in user command line parameters
+fn_vout "Parsing user options"
+while getopts "hc:vd:lr:" opt
+do
+    case $opt in
+        h)
+            fn_usage
+            exit 1
+            ;;
+        c)
+            conf_file=$OPTARG
+            ;;
+        v)
+            verbose=1
+            ;;
+        d)
+            virt_doms=$OPTARG
+            ;;
+        l)
+            list_audits="true"
+            ;;
+        r)
+            report_id=$OPTARG
+            ;;
+        *)
+            printf "ERROR: Unknown option: $opt\n" 1>&2
+            fn_usage
+            exit 1
+            ;;
+    esac
+done
+
+# get the bits we need
+fn_parseconf
+
+## Need to make sure there isn't another instance of gaudit running
+fn_vout "Checking for lock file"
+if [[ -f $lock_file ]]; then
+    printf "ERROR: another instance of gaudit is running or exited uncleanly\n" 1>&2
+    printf "\tIf this is an error, remove lock file at: $lock_file\n" 1>&2
+    exit 1
+else
+    echo $$ > $lock_file
+fi
+
+if [[ $list_audits == "true" ]]; then
+
+
+    printf "Available Report IDs:\n"
+    printf "Audit ID\t%-25s\t%-25s\n" "VM Domain Name" "Timestamp"
+    for i in $(grep "._BEGIN_" $log_file | cut -d'_' -f3)
+    do
+        printf "$i\n"
+
+        for x in $(sed -n "/\._BEGIN_$i/,/\._END_$i/p" $log_file |
+        grep "# Begin Rootkit Audit Log for" | cut -d' ' -f7)
+        do
+            printf "\t\t%-25s\t%-25s\n" "$x" \
+            "$(sed -n "/\._BEGIN_$i/,/\._END_$i/p" $log_file |
+            grep "# Begin Rootkit Audit Log for $x" | cut -d' ' -f9)"
+
+        done
+
+    done
+
+    rm -f $lock_file
+    exit 0
+fi
+
+
+if [[ $report_id -gt 0 ]]; then
+
+    if [[ $verbose -eq 1 ]]; then
+        # Do a full dump of the output - report will summarize at the bottom
+        sed -n "/\._BEGIN_$repord_id/,/\._END_$report_id/p" $log_file
+
+    fi
+
+    if [[ $virt_doms == "" ]]; then
+        printf "ERROR: no virtual domains provided for reporting\n" 1>&2
+        fn_usage
+    else
+        for vm in $(printf "$virt_doms" | tr ',' ' ')
+        do
+            ## report requested
+            fn_genreport $report_id $vm
+        done
+    fi
+            
+    ## Clean up after ourselves
+    rm -f $lock_file
+
+    exit 0
+fi
+
+## Find out which domains are currently in use
+fn_vout "Checking system for running virtual domain inventory"
+for vm in "$(virsh list | grep running | awk '{print $2}')"; 
+do 
+    running_doms+=( "$vm" )
+done
+fn_vout "Found running domains: "
+if [[ ${#running_doms[@]} -gt 0 ]]; then
+    for dom in ${running_doms[@]}
+    do
+        fn_vout "\t\t$dom"
+    done
+else
+    fn_vout "\t\tNONE"
+    printf "ERROR: No running virtual domains found." 1>&2
+    fn_usage
+    ## Clean up after ourselves
+    rm -f $lock_file
+    exit 1
+fi
+
+## Make sure user provided virt domains are running
+if [[ "$virt_doms" != "" ]]; then
+    fn_vout "Verifying user provided virtual domains."
+    for vm in $(printf "$virt_doms" | tr ',' ' ')
+    do
+        vdom_found=0
+        for i in ${running_doms[@]}
+        do
+            if [[ "$vm" == "$i" ]]; then
+                vdom_found=1
+            fi
+        done
+        if [[ $vdom_found -eq 0 ]]; then
+            printf "ERROR: user provided virtual domain that is not running\n" 1>&2
+            fn_usage
+            rm -f $lock_file
+            exit 1
+        fi
+    done
+    fn_vout "User provided virtual domains successfully verified."
+fi
+
+
+## Need to update signatures where necessary
+fn_vout "Performing pre security scan updates."
+if [[ $verbose -eq 1 ]]; then
+    rkhunter --update
+else
+    rkhunter --update 2>&1 > /dev/null
+fi
+
+## Mount the virtual machines and start reporting!!
+fn_vout "Running guest system reports ..."
+
+## Offer up the report information to the user
+##### FIXME - this will change, need to sort out how to handle reports
+printf "Audit Number $tag_num\n"
+printf "Pass this number to the utility -r option for running reports later\n"
+printf "Make sure to specify desired domains to report on\n"
+
+# Tag the beginning of this run for report generation later
+printf "$b_tag\n" >> $log_file
+
+if [[ "$virt_doms" != "" ]]; then
+    for vm in $(printf "$virt_doms" | tr ',' ' ')
+    do
+        fn_vout "Starting Security Audit for $vm"
+        fn_runaudit $vm
+    done
+elif [[ ${#running_doms[@]} -gt 0 ]]; then
+    for vm in ${running_doms[@]}
+    do
+        fn_vout "Starting Security Audit for $vm"
+        fn_runaudit $vm
+    done
+fi
+
+# Tag the ending of this run for report generation later
+printf "$e_tag\n" >> $log_file
+
+## Clean up after ourselves
+rm -f $lock_file

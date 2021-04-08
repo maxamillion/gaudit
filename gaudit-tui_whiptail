@@ -1,0 +1,62 @@
+#!/bin/bash
+###############################################################################
+#
+# Adam Miller - ajm023@shsu.edu
+#
+# gaudit-tui
+#
+#   Terminal User Interface (tui) for gaudit implemented using the Red Hat 
+#   newt library via its whiptail utility.
+#
+#   This code follows PEP8 as closely as possible, where applicable.
+#   For more information: http://www.python.org/dev/peps/pep-0008/
+#       - While this isn't python code, good guidelines shouldn't be limited to
+#         a single language. :)
+#   
+###############################################################################
+
+
+# User must be root or won't have any access to libvirt
+if [[ $(id -u) -ne 0 ]]; then
+    printf "ERROR: gaudit must be run as root\n"
+    exit 1
+fi
+
+# Set the LINES and COLUMNS environmnet variables
+eval "$(resize)"
+
+# Need a lock file so we don't try and run multiple audits ... could be bad
+#   I suppose this could be set in the config file but need a sane default 
+#   just in case it isn't.
+lock_file="/var/run/gaudit.pid"
+
+# height 
+height=$(( $LINES / 2 ))
+
+# width
+width=$(( $COLUMNS / 2 ))
+
+# Title screen, because they are pleasant
+whiptail --fb --backtitle "GAUDIT-TUI" --title "Welcome" \
+    --msgbox 'Welcome to the terminal user interface for gaudit!' \
+    $height $width
+
+# Get the listing of running virtual machines and present them for selection
+nv=$(virsh list | grep -v "$(virsh list | head -2)" | head --lines=-1 | wc -l )
+doms=$( whiptail --fb --backtitle "GAUDIT-TUI" --title "VM Domains" --noitem \
+    --checklist "Select VM Domains to audit:" $height $width $(( $height - 10 )) \
+    $(virsh list | grep -v "$(virsh list | head -2)" | head --lines=-1 |
+    awk '{printf "%s %s ", $2, "OFF"} END{ printf "\n"}') 3>&1 1>&2 2>&3 )
+dom_ary=( $( printf "%s" $doms | tr '"' ' ' ) )
+
+
+whiptail --fb --backtitle "GAUDIT-TUI" --title "Audit" \
+    --infobox 'Auditing selected domains ...' \
+    $height $width
+
+gaudit -d $( for i in ${dom_ary[@]}; do printf "%s," $i; done; printf "\n" ) 
+
+whiptail --fb --backtitle "GAUDIT-TUI" --title "Complete" \
+    --msgbox 'The root kit audit is complete.' \
+    $height $width
+

@@ -1,0 +1,16 @@
+gaudit - proof of concept security audits using libvirt/libguestfs
+
+INSTALLATION
+    This installation information is assuming that the host (or machine running 
+the KVM hypervisor) is Fedora version 16 or higher running on the x86_64
+architecture.
+
+Installation is as simple as running the following command as root:
+    yum -y localinstall gaudit-0.1-1.fc16.x86_64.rpm --nogpgcheck
+
+At this point installation is complete and documentation can be found with
+the following command:
+    man 8 gaudit
+
+Or simply run the companion program and follow the on screen instructions:
+    gaudit-tui
